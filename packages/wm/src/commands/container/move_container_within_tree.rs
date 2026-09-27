@@ -20,11 +20,40 @@ use crate::{models::Container, traits::CommonGetters, wm_state::WmState};
 /// container, which can cause the target parent to become detached. For
 /// example, in the layout V[1 H[2]] where container 1 is moved down, the
 /// parent gets removed resulting in V[1 2].
+///
+/// Emits a `WmEvent::FocusedContainerMoved` event if the container has
+/// focus after the move.
 pub fn move_container_within_tree(
   container_to_move: &Container,
   target_parent: &Container,
   target_index: usize,
   state: &WmState,
+) -> anyhow::Result<()> {
+  move_container_within_tree_without_event(
+    container_to_move,
+    target_parent,
+    target_index,
+  )?;
+
+  if container_to_move.has_focus(None) {
+    state.emit_event(WmEvent::FocusedContainerMoved {
+      focused_container: container_to_move.to_dto()?,
+    });
+  }
+
+  Ok(())
+}
+
+/// Same as `move_container_within_tree`, but without emitting a
+/// `WmEvent::FocusedContainerMoved` event.
+///
+/// Useful when the move is an intermediate step of a larger change (e.g.
+/// a tiling window being replaced by a non-tiling window), where the
+/// container's state mid-change shouldn't be broadcast.
+pub fn move_container_within_tree_without_event(
+  container_to_move: &Container,
+  target_parent: &Container,
+  target_index: usize,
 ) -> anyhow::Result<()> {
   // Create iterator of parent, grandparent, and great-grandparent.
   let ancestors =
@@ -43,12 +72,6 @@ pub fn move_container_within_tree(
       .borrow_children_mut()
       .shift_to_index(target_index, container_to_move.clone());
 
-    if container_to_move.has_focus(None) {
-      state.emit_event(WmEvent::FocusedContainerMoved {
-        focused_container: container_to_move.to_dto()?,
-      });
-    }
-
     return Ok(());
   }
 
@@ -59,7 +82,6 @@ pub fn move_container_within_tree(
       container_to_move,
       &lowest_common_ancestor,
       target_index,
-      state,
     );
   }
 
@@ -127,12 +149,6 @@ pub fn move_container_within_tree(
     flatten_child_split_containers(ancestor)?;
   }
 
-  if container_to_move.has_focus(None) {
-    state.emit_event(WmEvent::FocusedContainerMoved {
-      focused_container: container_to_move.to_dto()?,
-    });
-  }
-
   Ok(())
 }
 
@@ -140,7 +156,6 @@ fn move_to_lowest_common_ancestor(
   container_to_move: &Container,
   lowest_common_ancestor: &Container,
   target_index: usize,
-  state: &WmState,
 ) -> anyhow::Result<()> {
   // Keep reference to focus index of container's ancestor in LCA's child
   // focus order.
@@ -163,12 +178,6 @@ fn move_to_lowest_common_ancestor(
   lowest_common_ancestor
     .borrow_child_focus_order_mut()
     .shift_to_index(original_focus_index, container_to_move.id());
-
-  if container_to_move.has_focus(None) {
-    state.emit_event(WmEvent::FocusedContainerMoved {
-      focused_container: container_to_move.to_dto()?,
-    });
-  }
 
   Ok(())
 }
@@ -198,4 +207,93 @@ pub fn lowest_common_ancestor(
   }
 
   None
+}
+
+#[cfg(test)]
+mod tests {
+  use tokio::sync::mpsc;
+  use wm_common::{ContainerDto, TilingDirection, WmEvent};
+
+  use super::{
+    move_container_within_tree, move_container_within_tree_without_event,
+  };
+  use crate::{
+    commands::container::set_focused_descendant,
+    models::{Monitor, SplitContainer, TilingWindow, Workspace},
+    traits::CommonGetters,
+    wm_state::WmState,
+  };
+
+  /// Creates the layout H[1 V[2]], where window 2 has focus.
+  ///
+  /// Returns the workspace and window 2.
+  fn mock_layout() -> (Workspace, TilingWindow) {
+    let window_a = TilingWindow::mock().call();
+    let window_b = TilingWindow::mock().call();
+
+    let split = SplitContainer::mock()
+      .tiling_direction(TilingDirection::Vertical)
+      .tiling_containers(vec![window_b.clone().into()])
+      .call();
+
+    let workspace = Workspace::mock()
+      .tiling_containers(vec![window_a.into(), split.into()])
+      .call();
+
+    // Monitor is needed for resolving the window positions in DTOs.
+    let _monitor =
+      Monitor::mock().workspaces(vec![workspace.clone()]).call();
+
+    set_focused_descendant(&window_b.clone().into(), None);
+
+    (workspace, window_b)
+  }
+
+  /// Drains all events emitted so far.
+  fn drain_events(
+    event_rx: &mut mpsc::UnboundedReceiver<WmEvent>,
+  ) -> Vec<WmEvent> {
+    std::iter::from_fn(|| event_rx.try_recv().ok()).collect()
+  }
+
+  #[test]
+  fn emits_event_when_moving_focused_container() -> anyhow::Result<()> {
+    let (state, mut event_rx) = WmState::mock();
+    let (workspace, window) = mock_layout();
+
+    move_container_within_tree(
+      &window.clone().into(),
+      &workspace.clone().into(),
+      workspace.child_count(),
+      &state,
+    )?;
+
+    assert!(matches!(
+      drain_events(&mut event_rx).as_slice(),
+      [WmEvent::FocusedContainerMoved {
+        focused_container: ContainerDto::Window(dto),
+      }] if dto.id == window.id()
+        && dto.parent_id == Some(workspace.id())
+    ));
+
+    Ok(())
+  }
+
+  #[test]
+  fn does_not_emit_event_when_moving_without_event() -> anyhow::Result<()>
+  {
+    let (_state, mut event_rx) = WmState::mock();
+    let (workspace, window) = mock_layout();
+
+    move_container_within_tree_without_event(
+      &window.clone().into(),
+      &workspace.clone().into(),
+      workspace.child_count(),
+    )?;
+
+    assert_eq!(window.parent(), Some(workspace.into()));
+    assert!(drain_events(&mut event_rx).is_empty());
+
+    Ok(())
+  }
 }

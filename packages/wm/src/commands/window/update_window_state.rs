@@ -1,10 +1,11 @@
 use anyhow::Context;
 use tracing::{info, warn};
-use wm_common::WindowState;
+use wm_common::{WindowState, WmEvent};
 
 use crate::{
   commands::container::{
-    move_container_within_tree, replace_container, resize_tiling_container,
+    move_container_within_tree, move_container_within_tree_without_event,
+    replace_container, resize_tiling_container,
   },
   models::{Container, InsertionTarget, WindowContainer},
   traits::{CommonGetters, TilingSizeGetters, WindowGetters},
@@ -163,6 +164,7 @@ fn set_non_tiling(
     }
     WindowContainer::TilingWindow(window) => {
       let parent = window.parent().context("No parent")?;
+      let is_workspace_child = parent == workspace.clone().into();
 
       let non_tiling_window = window.to_non_tiling(
         target_state.clone(),
@@ -175,13 +177,13 @@ fn set_non_tiling(
       );
 
       // Non-tiling windows should always be direct children of the
-      // workspace.
-      if parent != workspace.clone().into() {
-        move_container_within_tree(
+      // workspace. The window is still tiling at this point, so the move
+      // event is instead emitted once it has been replaced.
+      if !is_workspace_child {
+        move_container_within_tree_without_event(
           &window.clone().into(),
           &workspace.clone().into(),
           workspace.child_count(),
-          state,
         )?;
       }
 
@@ -191,6 +193,12 @@ fn set_non_tiling(
         window.index(),
       )?;
 
+      if !is_workspace_child && non_tiling_window.has_focus(None) {
+        state.emit_event(WmEvent::FocusedContainerMoved {
+          focused_container: non_tiling_window.to_dto()?,
+        });
+      }
+
       state
         .pending_sync
         .queue_container_to_redraw(non_tiling_window.clone())
@@ -199,5 +207,111 @@ fn set_non_tiling(
 
       Ok(non_tiling_window.into())
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use tokio::sync::mpsc;
+  use wm_common::{
+    ContainerDto, FloatingStateConfig, TilingDirection, WindowState,
+    WmEvent,
+  };
+
+  use super::set_non_tiling;
+  use crate::{
+    commands::container::set_focused_descendant,
+    models::{
+      Monitor, SplitContainer, TilingContainer, TilingWindow, Workspace,
+    },
+    traits::CommonGetters,
+    wm_state::WmState,
+  };
+
+  /// Creates a workspace containing the given tiling containers, and
+  /// focuses the given window.
+  fn mock_workspace(
+    tiling_containers: Vec<TilingContainer>,
+    focused_window: &TilingWindow,
+  ) -> Workspace {
+    let workspace = Workspace::mock()
+      .tiling_containers(tiling_containers)
+      .call();
+
+    // Monitor is needed for resolving the window positions in DTOs.
+    let _monitor =
+      Monitor::mock().workspaces(vec![workspace.clone()]).call();
+
+    set_focused_descendant(&focused_window.clone().into(), None);
+
+    workspace
+  }
+
+  /// Drains all events emitted so far.
+  fn drain_events(
+    event_rx: &mut mpsc::UnboundedReceiver<WmEvent>,
+  ) -> Vec<WmEvent> {
+    std::iter::from_fn(|| event_rx.try_recv().ok()).collect()
+  }
+
+  #[test]
+  fn emits_only_final_state_when_leaving_split() -> anyhow::Result<()> {
+    let (mut state, mut event_rx) = WmState::mock();
+
+    // Layout of H[1 V[2]], where window 2 has focus.
+    let window_a = TilingWindow::mock().call();
+    let window_b = TilingWindow::mock().call();
+
+    let split = SplitContainer::mock()
+      .tiling_direction(TilingDirection::Vertical)
+      .tiling_containers(vec![window_b.clone().into()])
+      .call();
+
+    let workspace =
+      mock_workspace(vec![window_a.into(), split.into()], &window_b);
+
+    let window = set_non_tiling(
+      window_b.into(),
+      WindowState::Floating(FloatingStateConfig::default()),
+      &mut state,
+    )?;
+
+    assert_eq!(window.parent(), Some(workspace.into()));
+
+    // The intermediate tiling state of the window (after being moved out
+    // of the split container) should not be broadcast.
+    assert!(matches!(
+      drain_events(&mut event_rx).as_slice(),
+      [WmEvent::FocusedContainerMoved {
+        focused_container: ContainerDto::Window(dto),
+      }] if dto.id == window.id()
+        && matches!(dto.state, WindowState::Floating(_))
+    ));
+
+    Ok(())
+  }
+
+  #[test]
+  fn emits_no_event_when_leaving_workspace() -> anyhow::Result<()> {
+    let (mut state, mut event_rx) = WmState::mock();
+
+    // Layout of H[1 2], where window 2 has focus.
+    let window_a = TilingWindow::mock().call();
+    let window_b = TilingWindow::mock().call();
+
+    mock_workspace(
+      vec![window_a.into(), window_b.clone().into()],
+      &window_b,
+    );
+
+    set_non_tiling(
+      window_b.into(),
+      WindowState::Floating(FloatingStateConfig::default()),
+      &mut state,
+    )?;
+
+    assert!(drain_events(&mut event_rx).is_empty());
+
+    Ok(())
   }
 }

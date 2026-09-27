@@ -681,6 +681,22 @@ impl WmState {
   }
 }
 
+#[cfg(test)]
+impl WmState {
+  /// Creates a mock `WmState` for use in tests.
+  ///
+  /// Returns the state along with a receiver for the events it emits.
+  pub fn mock() -> (Self, mpsc::UnboundedReceiver<WmEvent>) {
+    let (event_tx, event_rx) = mpsc::unbounded_channel();
+    let (exit_tx, _) = mpsc::unbounded_channel();
+
+    let mut state = Self::new(Dispatcher::mock(), event_tx, exit_tx);
+    state.has_initialized = true;
+
+    (state, event_rx)
+  }
+}
+
 impl Drop for WmState {
   fn drop(&mut self) {
     let managed_windows = self.windows();

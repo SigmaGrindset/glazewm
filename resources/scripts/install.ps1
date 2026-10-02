@@ -24,6 +24,18 @@
     if ($entry) { $entry.InstallDir } else { $null }
   }
 
+  # Returns the IDs of running WM processes.
+  #
+  # CLI processes (e.g. `glazewm sub`) share the same process name. The path
+  # of an elevated WM process can't be read, so filter by exclusion instead.
+  # Exited processes stay listed (without threads) while other processes hold
+  # handles to them, so those are excluded as well.
+  function Get-WmProcessIds([string]$cliExe) {
+    Get-Process -Name 'glazewm' -ErrorAction SilentlyContinue |
+      Where-Object { $_.Threads.Count -gt 0 -and $_.Path -ne $cliExe } |
+      Select-Object -ExpandProperty Id
+  }
+
   $arch = switch ($env:PROCESSOR_ARCHITECTURE) {
     'AMD64' { 'x64' }
     'ARM64' { 'arm64' }
@@ -44,25 +56,16 @@
     if ($installDir) {
       $cliExe = Join-Path $installDir 'cli\glazewm.exe'
 
-      # CLI processes (e.g. `glazewm sub`) share the same process name. The
-      # path of an elevated WM process can't be read, so filter by
-      # exclusion instead.
-      $wmProcessIds = @(
-        Get-Process -Name 'glazewm' -ErrorAction SilentlyContinue |
-          Where-Object { $_.Path -ne $cliExe } |
-          Select-Object -ExpandProperty Id
-      )
-
-      if ($wmProcessIds.Count -gt 0) {
+      if (@(Get-WmProcessIds $cliExe).Count -gt 0) {
         Write-Host 'Exiting running GlazeWM instance...'
         & $cliExe command wm-exit | Out-Null
 
         $deadline = (Get-Date).AddSeconds(10)
-        while ((Get-Process -Id $wmProcessIds -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) {
+        while (@(Get-WmProcessIds $cliExe).Count -gt 0 -and (Get-Date) -lt $deadline) {
           Start-Sleep -Milliseconds 500
         }
 
-        if (Get-Process -Id $wmProcessIds -ErrorAction SilentlyContinue) {
+        if (@(Get-WmProcessIds $cliExe).Count -gt 0) {
           throw 'GlazeWM is still running. Exit it manually and re-run this script.'
         }
       }

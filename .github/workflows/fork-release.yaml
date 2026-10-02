@@ -1,0 +1,216 @@
+# Builds unsigned installers and publishes them as the latest GitHub release.
+#
+# Unlike `release.yaml`, this doesn't require glzr's code signing secrets.
+# Installers use stable file names, so the install scripts can always fetch
+# them via `releases/latest/download/<name>`:
+#  - Windows: `resources/scripts/install.ps1`.
+#  - macOS: `resources/scripts/install.sh`.
+#
+# The macOS packaging steps mirror `package.yaml`, minus signing and
+# notarization with an Apple Developer ID.
+name: Fork release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_number:
+        type: string
+        required: true
+        description: Version number to use for the build (e.g. `1.0.0`).
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-release
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate version number
+        env:
+          VERSION_NUMBER: ${{ inputs.version_number }}
+        run: |
+          # Executables and MSI installers require a numeric version.
+          if [[ ! "$VERSION_NUMBER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Version number must be in the format 'major.minor.patch' (got '$VERSION_NUMBER')."
+            exit 1
+          fi
+
+          # Releasing an existing tag would publish that tag's commit instead
+          # of the current one.
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION_NUMBER" > /dev/null; then
+            echo "::error::Tag 'v$VERSION_NUMBER' already exists."
+            exit 1
+          fi
+
+  build:
+    needs: validate
+    uses: ./.github/workflows/build.yaml
+    with:
+      # UIAccess executables fail to launch unless signed with a trusted
+      # certificate.
+      enable_ui_access: false
+      version_number: ${{ inputs.version_number }}
+
+  package-windows:
+    needs: build
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ inputs.version_number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: build-*
+          merge-multiple: true
+
+      - name: Install WiX and its extensions
+        run: |
+          dotnet tool install --global wix --version 5.0.0
+          wix extension add WixToolset.UI.wixext/5 WixToolset.Util.wixext/5 WixToolset.BootstrapperApplications.wixext/5
+
+      # Signing is skipped by the script since AzureSignTool isn't installed.
+      - name: Run packaging script
+        run: |
+          ./resources/scripts/package.ps1 -VersionNumber $env:VERSION
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: package-windows
+          if-no-files-found: error
+          path: out/installer-*
+
+  package-macos:
+    needs: build
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ inputs.version_number }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: build-*
+          merge-multiple: true
+
+      - name: Create universal binaries
+        run: |
+          mkdir temp
+          for binary in glazewm glazewm-cli; do
+            lipo -create \
+              "target/x86_64-apple-darwin/release/$binary" \
+              "target/aarch64-apple-darwin/release/$binary" \
+              -output "temp/$binary"
+            chmod +x "temp/$binary"
+          done
+
+      # Ad-hoc signatures don't need a certificate, but are required for
+      # binaries to run on Apple Silicon. Make sure to sign the binaries
+      # before they're copied into the app bundle.
+      - name: Ad-hoc sign universal binaries
+        run: |
+          for binary in glazewm glazewm-cli; do
+            codesign --force --sign - "temp/$binary"
+            codesign --verify --verbose=2 "temp/$binary"
+          done
+
+      - name: Convert icon to ICNS
+        run: |
+          ICONSET_DIR="temp/icon.iconset"
+          mkdir -p $ICONSET_DIR
+          sips -z 16 16     resources/assets/icon.png --out $ICONSET_DIR/icon_16x16.png
+          sips -z 32 32     resources/assets/icon.png --out $ICONSET_DIR/icon_16x16@2x.png
+          sips -z 32 32     resources/assets/icon.png --out $ICONSET_DIR/icon_32x32.png
+          sips -z 64 64     resources/assets/icon.png --out $ICONSET_DIR/icon_32x32@2x.png
+          sips -z 128 128   resources/assets/icon.png --out $ICONSET_DIR/icon_128x128.png
+          sips -z 256 256   resources/assets/icon.png --out $ICONSET_DIR/icon_128x128@2x.png
+          sips -z 256 256   resources/assets/icon.png --out $ICONSET_DIR/icon_256x256.png
+          sips -z 512 512   resources/assets/icon.png --out $ICONSET_DIR/icon_256x256@2x.png
+          sips -z 512 512   resources/assets/icon.png --out $ICONSET_DIR/icon_512x512.png
+          sips -z 1024 1024 resources/assets/icon.png --out $ICONSET_DIR/icon_512x512@2x.png
+          iconutil -c icns $ICONSET_DIR -o temp/icon.icns
+
+      - name: Create app bundle
+        run: |
+          CONTENTS_DIR="temp/GlazeWM.app/Contents"
+          mkdir -p "$CONTENTS_DIR/MacOS" "$CONTENTS_DIR/Resources"
+
+          cp temp/glazewm "$CONTENTS_DIR/MacOS/"
+          cp temp/glazewm-cli "$CONTENTS_DIR/MacOS/"
+          cp temp/icon.icns "$CONTENTS_DIR/Resources/icon.icns"
+          chmod +x "$CONTENTS_DIR/MacOS"/*
+
+          # Substitute version placeholder in Info.plist.
+          sed "s/\${VERSION}/$VERSION/g" resources/Info.plist > "$CONTENTS_DIR/Info.plist"
+
+          echo -n "APPL????" > "$CONTENTS_DIR/PkgInfo"
+
+      - name: Ad-hoc sign app bundle
+        run: |
+          codesign --force --sign - temp/GlazeWM.app
+          codesign --verify --verbose=2 --deep --strict temp/GlazeWM.app
+
+      - name: Create DMG
+        run: |
+          DMG_DIR="temp/dmg-contents"
+          mkdir -p $DMG_DIR
+          cp -R temp/GlazeWM.app $DMG_DIR/
+
+          # Create a symbolic link to `/Applications` folder.
+          ln -s /Applications $DMG_DIR/Applications
+
+          # Create the DMG.
+          hdiutil create -volname GlazeWM \
+            -srcfolder $DMG_DIR \
+            -ov -format UDZO \
+            installer-universal.dmg
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v6
+        with:
+          name: package-macos
+          if-no-files-found: error
+          path: installer-universal.dmg
+
+  release:
+    needs: [package-windows, package-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download installers
+        uses: actions/download-artifact@v8
+        with:
+          pattern: package-*
+          merge-multiple: true
+
+      # Stable names (without the version number) are required for
+      # `releases/latest/download/<name>` URLs.
+      - name: Rename installers
+        run: |
+          mv installer-universal.exe glazewm-windows-setup.exe
+          mv installer-x64.msi glazewm-windows-x64.msi
+          mv installer-arm64.msi glazewm-windows-arm64.msi
+          mv installer-universal.dmg glazewm-macos.dmg
+
+      - name: Create release
+        env:
+          # Add a `v` prefix to the version number.
+          VERSION: v${{ inputs.version_number }}
+          GH_REPO: ${{ github.repository }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$VERSION" \
+            --target "$GITHUB_SHA" \
+            --title "$VERSION" \
+            --generate-notes \
+            --latest \
+            "./glazewm-windows-setup.exe#$VERSION for Windows (with optional Zebar)" \
+            "./glazewm-windows-x64.msi#$VERSION for Windows (standalone, x64)" \
+            "./glazewm-windows-arm64.msi#$VERSION for Windows (standalone, arm64)" \
+            "./glazewm-macos.dmg#$VERSION for macOS"

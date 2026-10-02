@@ -34,6 +34,10 @@ pub fn move_workspace_in_direction(
       state,
     )?;
 
+    // An explicit move takes precedence over restoring the workspace to
+    // the monitor it was displaced from.
+    workspace.set_displaced_from(None);
+
     let windows = workspace
       .descendants()
       .filter_map(|descendant| descendant.as_window_container().ok());

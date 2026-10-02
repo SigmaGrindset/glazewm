@@ -58,6 +58,7 @@ impl Monitor {
     #[builder(default = mock_working_area())] working_area: Rect,
     #[builder(default = MOCK_DPI)] dpi: u32,
     #[builder(default = MOCK_SCALE_FACTOR)] scale_factor: f32,
+    device_id: Option<String>,
     #[builder(default = Display::mock())] native: Display,
     #[builder(default = vec![])] workspaces: Vec<Workspace>,
   ) -> Self {
@@ -67,6 +68,7 @@ impl Monitor {
       .working_area(working_area)
       .dpi(dpi)
       .scale_factor(scale_factor)
+      .maybe_device_id(device_id)
       .call();
 
     let monitor = Self::new(native, properties);
@@ -89,6 +91,10 @@ impl NativeMonitorProperties {
     #[builder(default = mock_working_area())] working_area: Rect,
     #[builder(default = MOCK_DPI)] dpi: u32,
     #[builder(default = MOCK_SCALE_FACTOR)] scale_factor: f32,
+    /// Persistent identifier of the display (e.g. `DEL40A3`). Maps to
+    /// `device_uuid` on macOS, and to `hardware_id` and `device_path` on
+    /// Windows.
+    device_id: Option<String>,
   ) -> Self {
     Self {
       device_name,
@@ -97,13 +103,17 @@ impl NativeMonitorProperties {
       dpi,
       scale_factor,
       #[cfg(target_os = "macos")]
-      device_uuid: String::new(),
+      device_uuid: device_id.unwrap_or_default(),
       #[cfg(target_os = "windows")]
       handle: 0,
       #[cfg(target_os = "windows")]
-      hardware_id: None,
+      device_path: device_id.as_ref().map(|device_id| {
+        format!(
+          r"\\?\DISPLAY#{device_id}#5&0&UID0#{{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}}"
+        )
+      }),
       #[cfg(target_os = "windows")]
-      device_path: None,
+      hardware_id: device_id,
     }
   }
 }

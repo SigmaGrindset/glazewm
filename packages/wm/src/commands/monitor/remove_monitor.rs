@@ -2,6 +2,7 @@ use anyhow::Context;
 use tracing::info;
 use wm_common::WmEvent;
 
+use super::mark_displaced_workspaces;
 use crate::{
   commands::{
     container::{detach_container, move_container_within_tree},
@@ -20,6 +21,8 @@ pub fn remove_monitor(
   config: &UserConfig,
 ) -> anyhow::Result<()> {
   info!("Removing monitor: {monitor}");
+
+  mark_displaced_workspaces(&monitor, config);
 
   let target_monitor = state
     .monitors()

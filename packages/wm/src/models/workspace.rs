@@ -15,7 +15,8 @@ use crate::{
   impl_common_getters, impl_container_debug,
   impl_tiling_direction_getters,
   models::{
-    Container, DirectionContainer, TilingContainer, WindowContainer,
+    Container, DirectionContainer, MonitorIdentity, TilingContainer,
+    WindowContainer,
   },
   traits::{CommonGetters, PositionGetters, TilingDirectionGetters},
 };
@@ -32,6 +33,7 @@ struct WorkspaceInner {
   config: WorkspaceConfig,
   gaps_config: GapsConfig,
   tiling_direction: TilingDirection,
+  displaced_from: Option<MonitorIdentity>,
 }
 
 impl Workspace {
@@ -48,6 +50,7 @@ impl Workspace {
       config,
       gaps_config,
       tiling_direction,
+      displaced_from: None,
     };
 
     Self(Rc::new(RefCell::new(workspace)))
@@ -61,6 +64,20 @@ impl Workspace {
   /// Update the underlying config for the workspace.
   pub fn set_config(&self, config: WorkspaceConfig) {
     self.0.borrow_mut().config = config;
+  }
+
+  /// Identity of the monitor the workspace was moved off due to the
+  /// monitor being disconnected.
+  pub fn displaced_from(&self) -> Option<MonitorIdentity> {
+    self.0.borrow().displaced_from.clone()
+  }
+
+  /// Update the monitor the workspace was displaced from.
+  pub fn set_displaced_from(
+    &self,
+    displaced_from: Option<MonitorIdentity>,
+  ) {
+    self.0.borrow_mut().displaced_from = displaced_from;
   }
 
   /// Whether the workspace is currently displayed by the parent monitor.

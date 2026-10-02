@@ -69,6 +69,7 @@ impl Default for GapsConfig {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all(serialize = "camelCase"))]
+#[allow(clippy::struct_excessive_bools)]
 pub struct GeneralConfig {
   /// Config for automatically moving the cursor.
   pub cursor_jump: CursorJumpConfig,
@@ -96,6 +97,11 @@ pub struct GeneralConfig {
 
   /// Affects which windows get shown in the native Windows taskbar.
   pub show_all_in_taskbar: bool,
+
+  /// Whether to move workspaces back to their original monitor when it
+  /// is reconnected (e.g. after unplugging a monitor or waking from
+  /// sleep).
+  pub restore_workspaces_on_reconnect: bool,
 }
 
 impl Default for GeneralConfig {
@@ -118,6 +124,7 @@ impl Default for GeneralConfig {
         }
       },
       show_all_in_taskbar: false,
+      restore_workspaces_on_reconnect: false,
     }
   }
 }

@@ -112,6 +112,11 @@ general:
   # workspace when focusing the current workspace.
   toggle_workspace_on_refocus: false
 
+  # Whether to move workspaces back to their original monitor when it is
+  # reconnected (e.g. after unplugging a monitor or waking from sleep).
+  # Has no effect on workspaces with `bind_to_monitor`.
+  restore_workspaces_on_reconnect: false
+
   cursor_jump:
     # Whether to automatically move the cursor on the specified trigger.
     enabled: true

@@ -12,8 +12,8 @@ use wm_platform::{Display, Rect};
 use crate::{
   impl_common_getters, impl_container_debug,
   models::{
-    Container, DirectionContainer, NativeMonitorProperties,
-    TilingContainer, WindowContainer, Workspace,
+    Container, DirectionContainer, MonitorIdentity,
+    NativeMonitorProperties, TilingContainer, WindowContainer, Workspace,
   },
   traits::{CommonGetters, PositionGetters},
 };
@@ -64,6 +64,13 @@ impl Monitor {
     native_properties: NativeMonitorProperties,
   ) {
     self.0.borrow_mut().native_properties = native_properties;
+  }
+
+  /// Persistent identity of the monitor's current display.
+  ///
+  /// Returns `None` if the display has no persistent identifier.
+  pub fn identity(&self) -> Option<MonitorIdentity> {
+    MonitorIdentity::from_properties(&self.0.borrow().native_properties)
   }
 
   pub fn displayed_workspace(&self) -> Option<Workspace> {

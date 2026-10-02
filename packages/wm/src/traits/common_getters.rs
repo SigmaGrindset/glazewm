@@ -115,17 +115,15 @@ pub trait CommonGetters {
 
   /// Children in order of last focus.
   fn child_focus_order(&self) -> Box<dyn Iterator<Item = Container> + '_> {
-    let child_focus_order = self.borrow_child_focus_order();
+    // Clone the IDs, since the returned iterator can't borrow from the
+    // `Ref` guard.
+    let child_ids = self.borrow_child_focus_order().clone();
 
-    Box::new(std::iter::from_fn(move || {
-      for child_id in child_focus_order.iter() {
-        if let Some(child) = self.child_by_id(child_id) {
-          return Some(child);
-        }
-      }
-
-      None
-    }))
+    Box::new(
+      child_ids
+        .into_iter()
+        .filter_map(|child_id| self.child_by_id(&child_id)),
+    )
   }
 
   /// Leaf nodes (i.e. windows and workspaces) in order of last focus.
@@ -374,4 +372,38 @@ macro_rules! impl_common_getters {
       }
     }
   };
+}
+
+#[cfg(test)]
+mod tests {
+  use super::CommonGetters;
+  use crate::{
+    commands::container::set_focused_descendant,
+    models::{TilingWindow, Workspace},
+  };
+
+  #[test]
+  fn child_focus_order_yields_all_children() {
+    let windows = [
+      TilingWindow::mock().call(),
+      TilingWindow::mock().call(),
+      TilingWindow::mock().call(),
+    ];
+
+    let workspace = Workspace::mock()
+      .tiling_containers(windows.iter().cloned().map(Into::into).collect())
+      .call();
+
+    set_focused_descendant(&windows[1].clone().into(), None);
+
+    let focus_order = workspace
+      .child_focus_order()
+      .map(|child| child.id())
+      .collect::<Vec<_>>();
+
+    assert_eq!(
+      focus_order,
+      [windows[1].id(), windows[0].id(), windows[2].id()]
+    );
+  }
 }

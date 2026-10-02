@@ -378,3 +378,19 @@ impl UserConfig {
     })
   }
 }
+
+#[cfg(test)]
+impl UserConfig {
+  /// Creates a mock `UserConfig` from the sample config.
+  pub fn mock() -> anyhow::Result<Self> {
+    let config_value: ParsedConfig = serde_yaml::from_str(SAMPLE_CONFIG)?;
+    let window_rules_by_event = Self::window_rules_by_event(&config_value);
+
+    Ok(Self {
+      path: PathBuf::new(),
+      value: config_value,
+      value_str: SAMPLE_CONFIG.to_string(),
+      window_rules_by_event,
+    })
+  }
+}

@@ -40,6 +40,11 @@ general:
   # - 'false': Only show windows from the currently shown workspaces.
   show_all_in_taskbar: false
 
+  # Whether to move workspaces back to their original monitor when it is
+  # reconnected (e.g. after unplugging a monitor or waking from sleep).
+  # Has no effect on workspaces with `bind_to_monitor`.
+  restore_workspaces_on_reconnect: false
+
 gaps:
   # Whether to scale the gaps with the DPI of the monitor.
   scale_with_dpi: true
